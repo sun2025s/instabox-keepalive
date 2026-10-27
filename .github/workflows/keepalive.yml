@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  keepalive:
+  keepalive-usc:
     runs-on: ubuntu-latest
     steps:
       - name: Resolve machine id and state
@@ -66,3 +66,126 @@ jobs:
             -H "X-API-Key: $INSTABOX_API_KEY" \
             -H 'Content-Type: application/json' \
             -d '{"cmd": "echo keepalive"}'
+
+  keepalive-ssw:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve machine id and state
+        id: machine
+        env:
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY_2 }}
+        run: |
+          BODY=$(curl -sf https://api.instabox.sh/v1/machines/ssw -H "X-API-Key: $INSTABOX_API_KEY")
+          echo "$BODY" > /tmp/machine.json
+          ID=$(python3 -c "import json; d=json.load(open('/tmp/machine.json')); print(d.get('id') or d['machines'][0]['id'])")
+          STATE=$(python3 -c "import json; d=json.load(open('/tmp/machine.json')); print(d.get('state') or d['machines'][0]['state'])")
+          echo "machine_id=$ID" >> "$GITHUB_OUTPUT"
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+      - name: Exec keepalive
+        id: exec
+        continue-on-error: true
+        env:
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY_2 }}
+          MACHINE_ID: ${{ steps.machine.outputs.machine_id }}
+        run: |
+          curl -sf -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec" \
+            -H "X-API-Key: $INSTABOX_API_KEY" \
+            -H 'Content-Type: application/json' \
+            -d '{"cmd": "echo keepalive"}'
+      - name: Recover if not running
+        if: steps.exec.outcome == 'failure'
+        env:
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY_2 }}
+          MACHINE_ID: ${{ steps.machine.outputs.machine_id }}
+          STATE: ${{ steps.machine.outputs.state }}
+        run: |
+          set -e
+          if [ "$STATE" = "suspended" ]; then
+            ACTION=resume
+          elif [ "$STATE" = "stopped" ]; then
+            ACTION=start
+          else
+            echo "Machine state is $STATE, retrying exec once"
+            curl -sf -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec" \
+              -H "X-API-Key: $INSTABOX_API_KEY" \
+              -H 'Content-Type: application/json' \
+              -d '{"cmd": "echo keepalive"}'
+            exit 0
+          fi
+          OP=$(curl -sf -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/$ACTION" \
+            -H "X-API-Key: $INSTABOX_API_KEY" \
+            -H "Idempotency-Key: keepalive-$GITHUB_RUN_ID" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); op=d.get('operation') or d; print(op.get('id') or op.get('operationId') or d.get('id'))")
+          for i in $(seq 1 30); do
+            STATUS=$(curl -sf "https://api.instabox.sh/v1/operations/$OP" -H "X-API-Key: $INSTABOX_API_KEY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status') or d.get('state') or '')")
+            echo "operation status: $STATUS"
+            if [ "$STATUS" = "succeeded" ]; then break; fi
+            if [ "$STATUS" = "failed" ]; then exit 1; fi
+            sleep 10
+          done
+          curl -sf -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec" \
+            -H "X-API-Key: $INSTABOX_API_KEY" \
+            -H 'Content-Type: application/json' \
+            -d '{"cmd": "echo keepalive"}'
+
+  # --- Reserved for a third machine (uncomment and fill in when ready) ---
+  # keepalive-third:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Resolve machine id and state
+  #       id: machine
+  #       env:
+  #         INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY_3 }}
+  #       run: |
+  #         BODY=$(curl -sf https://api.instabox.sh/v1/machines/THIRD_MACHINE_NAME -H "X-API-Key: $INSTABOX_API_KEY")
+  #         echo "$BODY" > /tmp/machine.json
+  #         ID=$(python3 -c "import json; d=json.load(open('/tmp/machine.json')); print(d.get('id') or d['machines'][0]['id'])")
+  #         STATE=$(python3 -c "import json; d=json.load(open('/tmp/machine.json')); print(d.get('state') or d['machines'][0]['state'])")
+  #         echo "machine_id=$ID" >> "$GITHUB_OUTPUT"
+  #         echo "state=$STATE" >> "$GITHUB_OUTPUT"
+  #     - name: Exec keepalive
+  #       id: exec
+  #       continue-on-error: true
+  #       env:
+  #         INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY_3 }}
+  #         MACHINE_ID: ${{ steps.machine.outputs.machine_id }}
+  #       run: |
+  #         curl -sf -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec" \
+  #           -H "X-API-Key: $INSTABOX_API_KEY" \
+  #           -H 'Content-Type: application/json' \
+  #           -d '{"cmd": "echo keepalive"}'
+  #     - name: Recover if not running
+  #       if: steps.exec.outcome == 'failure'
+  #       env:
+  #         INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY_3 }}
+  #         MACHINE_ID: ${{ steps.machine.outputs.machine_id }}
+  #         STATE: ${{ steps.machine.outputs.state }}
+  #       run: |
+  #         set -e
+  #         if [ "$STATE" = "suspended" ]; then
+  #           ACTION=resume
+  #         elif [ "$STATE" = "stopped" ]; then
+  #           ACTION=start
+  #         else
+  #           echo "Machine state is $STATE, retrying exec once"
+  #           curl -sf -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec" \
+  #             -H "X-API-Key: $INSTABOX_API_KEY" \
+  #             -H 'Content-Type: application/json' \
+  #             -d '{"cmd": "echo keepalive"}'
+  #           exit 0
+  #         fi
+  #         OP=$(curl -sf -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/$ACTION" \
+  #           -H "X-API-Key: $INSTABOX_API_KEY" \
+  #           -H "Idempotency-Key: keepalive-$GITHUB_RUN_ID" \
+  #           | python3 -c "import sys,json; d=json.load(sys.stdin); op=d.get('operation') or d; print(op.get('id') or op.get('operationId') or d.get('id'))")
+  #         for i in $(seq 1 30); do
+  #           STATUS=$(curl -sf "https://api.instabox.sh/v1/operations/$OP" -H "X-API-Key: $INSTABOX_API_KEY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status') or d.get('state') or '')")
+  #           echo "operation status: $STATUS"
+  #           if [ "$STATUS" = "succeeded" ]; then break; fi
+  #           if [ "$STATUS" = "failed" ]; then exit 1; fi
+  #           sleep 10
+  #         done
+  #         curl -sf -X POST "https://api.instabox.sh/v1/machines/$MACHINE_ID/exec" \
+  #           -H "X-API-Key: $INSTABOX_API_KEY" \
+  #           -H 'Content-Type: application/json' \
+  #           -d '{"cmd": "echo keepalive"}'
